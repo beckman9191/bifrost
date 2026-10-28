@@ -87,6 +87,7 @@ func (c *CompatConfig) UnmarshalJSON(data []byte) error {
 // ClientConfig represents the core configuration for Bifrost HTTP transport and the Bifrost Client.
 // It includes settings for excess request handling, Prometheus metrics, and initial pool size.
 type ClientConfig struct {
+	StreamUsageEstimation *schemas.StreamUsageEstimationConfig `json:"stream_usage_estimation,omitempty"`
 	// Input-only presence information; never persisted or included in responses/hashes.
 	inferenceAuthProvided bool
 
@@ -358,6 +359,14 @@ func (c *ClientConfig) GenerateClientConfigHash() (string, error) {
 	}
 
 	// Only hash when present to avoid legacy config hash churn on upgrade.
+	if c.StreamUsageEstimation != nil {
+		data, err := sonic.Marshal(c.StreamUsageEstimation)
+		if err != nil {
+			return "", err
+		}
+		hash.Write([]byte("streamUsageEstimation:"))
+		hash.Write(data)
+	}
 	if c.MCPCodeModeLimits != nil {
 		data, err := sonic.Marshal(c.MCPCodeModeLimits)
 		if err != nil {

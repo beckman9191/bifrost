@@ -716,3 +716,28 @@ func NewAccumulator(pricingManager *modelcatalog.ModelCatalog, logger schemas.Lo
 	go a.startAccumulatorMapCleanup()
 	return a
 }
+
+// HasUsageChunk avoids constructing a duplicate chunk when a plugin already
+// accumulated this event before the core's post-hook capture point.
+func (a *Accumulator) HasUsageChunk(id string, response *schemas.BifrostResponse) bool {
+	value, ok := a.streamAccumulators.Load(id)
+	if !ok || response == nil {
+		return false
+	}
+	state := value.(*StreamAccumulator)
+	state.mu.Lock()
+	defer state.mu.Unlock()
+	if r := response.ChatResponse; r != nil {
+		_, ok = state.ChatChunksSeen[r.ExtraFields.ChunkIndex]
+		return ok
+	}
+	if r := response.TextCompletionResponse; r != nil {
+		_, ok = state.ChatChunksSeen[r.ExtraFields.ChunkIndex]
+		return ok
+	}
+	if r := response.ResponsesStreamResponse; r != nil {
+		_, ok = state.ResponsesChunksSeen[r.ExtraFields.ChunkIndex]
+		return ok
+	}
+	return false
+}

@@ -296,6 +296,7 @@ func mcpExternalURLToString(e *schemas.SecretVar) string {
 // UpdateClientConfig updates the client configuration in the database.
 func (s *RDBConfigStore) UpdateClientConfig(ctx context.Context, config *ClientConfig) error {
 	dbConfig := tables.TableClientConfig{
+		StreamUsageEstimation:                     config.StreamUsageEstimation,
 		DropExcessRequests:                        config.DropExcessRequests,
 		InitialPoolSize:                           config.InitialPoolSize,
 		EnableLogging:                             config.EnableLogging,
@@ -616,6 +617,7 @@ func (s *RDBConfigStore) GetClientConfig(ctx context.Context) (*ClientConfig, er
 		return nil, err
 	}
 	return &ClientConfig{
+		StreamUsageEstimation:          dbConfig.StreamUsageEstimation,
 		DropExcessRequests:             dbConfig.DropExcessRequests,
 		InitialPoolSize:                dbConfig.InitialPoolSize,
 		PrometheusLabels:               dbConfig.PrometheusLabels,

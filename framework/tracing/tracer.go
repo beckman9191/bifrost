@@ -1484,3 +1484,26 @@ func (t *Tracer) ObservabilityDropCounts() map[string]int64 {
 
 // Ensure Tracer implements schemas.Tracer at compile time
 var _ schemas.Tracer = (*Tracer)(nil)
+
+// BeginUsageAccumulation gives core ownership independent of logging plugins.
+func (t *Tracer) BeginUsageAccumulation(ctx *schemas.BifrostContext) bool {
+	id, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	if id == "" || t.accumulator == nil {
+		return false
+	}
+	t.CreateStreamAccumulator(id, time.Now())
+	return true
+}
+func (t *Tracer) CaptureUsageChunk(ctx *schemas.BifrostContext, response *schemas.BifrostResponse) {
+	if final, _ := ctx.Value(schemas.BifrostContextKeyStreamEndIndicator).(bool); final {
+		return
+	}
+	id, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	if !t.accumulator.HasUsageChunk(id, response) {
+		t.ProcessStreamingChunk(ctx, id, false, response, nil)
+	}
+}
+func (t *Tracer) EndUsageAccumulation(ctx *schemas.BifrostContext) {
+	id, _ := ctx.Value(schemas.BifrostContextKeyTraceID).(string)
+	t.CleanupStreamAccumulator(id)
+}

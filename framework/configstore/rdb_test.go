@@ -6040,3 +6040,49 @@ func TestDeleteAbandonedOauthConfigs_ConcurrentClientLinkSurvives(t *testing.T) 
 	require.NoError(t, db.Model(&tables.TableMCPClient{}).Where("client_id = ?", "racing-client").Count(&clients).Error)
 	assert.Equal(t, int64(1), clients, "the sweep must never cascade-delete a just-linked MCP client")
 }
+
+func TestStreamUsageEstimationConfigRoundTrip(t *testing.T) {
+	store := setupRDBTestStore(t)
+	ctx := context.Background()
+	for _, cfg := range []*schemas.StreamUsageEstimationConfig{nil, {Enabled: true}, {Enabled: true, Tokenizers: []string{"deepseek", "llama3"}}, {Enabled: false, Tokenizers: []string{"deepseek"}}, nil} {
+		input := &ClientConfig{StreamUsageEstimation: cfg}
+		require.NoError(t, store.UpdateClientConfig(ctx, input))
+		got, err := store.GetClientConfig(ctx)
+		require.NoError(t, err)
+		require.Equal(t, cfg, got.StreamUsageEstimation)
+	}
+	a, err := (&ClientConfig{}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	b, err := (&ClientConfig{StreamUsageEstimation: &schemas.StreamUsageEstimationConfig{Enabled: true}}).GenerateClientConfigHash()
+	require.NoError(t, err)
+	require.NotEqual(t, a, b)
+}
+
+func TestStreamUsageEstimationMigration(t *testing.T) {
+	store := setupRDBTestStore(t)
+	db := store.DB()
+	require.NoError(t, db.Migrator().DropColumn(&tables.TableClientConfig{}, "StreamUsageEstimationJSON"))
+	require.NoError(t, migrationAddStreamUsageEstimationClientColumn(context.Background(), db, testMigrationLogger))
+	require.True(t, db.Migrator().HasColumn(&tables.TableClientConfig{}, "stream_usage_estimation_json"))
+	require.NoError(t, migrationAddStreamUsageEstimationClientColumn(context.Background(), db, testMigrationLogger))
+}
+
+func TestStreamUsageEstimationJSONDefaults(t *testing.T) {
+	for _, tc := range []struct {
+		data       string
+		enabled    bool
+		tokenizers []string
+	}{
+		{`{}`, true, nil},
+		{`{"tokenizers":[]}`, true, []string{}},
+		{`{"tokenizers":["deepseek"]}`, true, []string{"deepseek"}},
+		{`{"enabled":false}`, false, nil},
+	} {
+		t.Run(tc.data, func(t *testing.T) {
+			var cfg schemas.StreamUsageEstimationConfig
+			require.NoError(t, json.Unmarshal([]byte(tc.data), &cfg))
+			require.Equal(t, tc.enabled, cfg.Enabled)
+			require.Equal(t, tc.tokenizers, cfg.Tokenizers)
+		})
+	}
+}

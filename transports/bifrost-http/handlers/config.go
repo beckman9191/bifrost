@@ -666,6 +666,19 @@ func (h *ConfigHandler) updateConfig(ctx *fasthttp.RequestCtx) {
 		}
 	}
 
+	if _, sent := clientConfigFields["stream_usage_estimation"]; sent {
+		if cfg := payload.ClientConfig.StreamUsageEstimation; cfg != nil {
+			for _, kind := range cfg.Tokenizers {
+				switch kind {
+				case "anthropic", "deepseek", "llama2", "llama3":
+				default:
+					SendError(ctx, fasthttp.StatusBadRequest, "unsupported stream usage tokenizer: "+kind)
+					return
+				}
+			}
+		}
+		updatedConfig.StreamUsageEstimation = payload.ClientConfig.StreamUsageEstimation
+	}
 	var restartReasons []string
 
 	if payload.ClientConfig.DropExcessRequests != currentConfig.DropExcessRequests {

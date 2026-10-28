@@ -540,6 +540,7 @@ var configstoreMigrationSteps = []migrationStep{
 	{IDs: []string{"add_ultrafast_above_272k_pricing_columns"}, run: migrationAddUltrafastAbove272kPricingColumns},
 	{IDs: []string{"add_priority_above_272k_cache_creation_pricing_column"}, run: migrationAddPriorityAbove272kCacheCreationPricingColumn},
 	{IDs: []string{"add_mcp_code_mode_limits_client_column"}, run: migrationAddMCPCodeModeLimitsClientColumn},
+	{IDs: []string{"add_stream_usage_estimation_client_column"}, run: migrationAddStreamUsageEstimationClientColumn},
 	{IDs: []string{"add_compat_force_reasoning_only_models_to_responses_column"}, run: migrationAddCompatForceReasoningOnlyModelsToResponsesColumn},
 	{IDs: []string{"backfill_compat_force_reasoning_only_models_to_responses"}, run: migrationBackfillCompatForceReasoningOnlyModelsToResponses},
 	{IDs: []string{"add_agent_gateway_tables"}, run: migrationAddAgentGatewayTables},
@@ -16816,6 +16817,39 @@ func migrationAddMCPClientDiscoveredToolDetailsColumn(ctx context.Context, db *g
 	}})
 	if err := m.Migrate(); err != nil {
 		return fmt.Errorf("error while running db migration %s: %w", migrationName, err)
+	}
+	return nil
+}
+
+func migrationAddStreamUsageEstimationClientColumn(ctx context.Context, db *gorm.DB, logger schemas.Logger) error {
+	migrationName := "add_stream_usage_estimation_client_column"
+	logger.Info("[configstore] starting migration %s", migrationName)
+	defer logger.Info("[configstore] finished migration %s", migrationName)
+	m := migrator.New(db, migrator.DefaultOptions, []*migrator.Migration{{
+		ID: migrationName,
+		Migrate: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if !mg.HasColumn(&tables.TableClientConfig{}, "stream_usage_estimation_json") {
+				if err := mg.AddColumn(&tables.TableClientConfig{}, "StreamUsageEstimationJSON"); err != nil {
+					return fmt.Errorf("add stream_usage_estimation_json column: %w", err)
+				}
+			}
+			return nil
+		},
+		Rollback: func(tx *gorm.DB) error {
+			tx = tx.WithContext(ctx)
+			mg := tx.Migrator()
+			if mg.HasColumn(&tables.TableClientConfig{}, "stream_usage_estimation_json") {
+				if err := mg.DropColumn(&tables.TableClientConfig{}, "StreamUsageEstimationJSON"); err != nil {
+					return fmt.Errorf("drop stream_usage_estimation_json column: %w", err)
+				}
+			}
+			return nil
+		},
+	}})
+	if err := m.Migrate(); err != nil {
+		return fmt.Errorf("error while running stream usage estimation client column migration: %s", err.Error())
 	}
 	return nil
 }

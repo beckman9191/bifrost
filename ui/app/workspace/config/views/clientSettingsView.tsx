@@ -107,6 +107,7 @@ export default function ClientSettingsView() {
 	const hasCoreConfigChanges = useMemo(() => {
 		if (!config) return false;
 		return (
+			JSON.stringify(localConfig.stream_usage_estimation) !== JSON.stringify(config.stream_usage_estimation) ||
 			localConfig.drop_excess_requests !== config.drop_excess_requests ||
 			localConfig.disable_db_pings_in_health !== config.disable_db_pings_in_health ||
 			localConfig.dump_errors_in_console_logs !== config.dump_errors_in_console_logs ||
@@ -134,7 +135,7 @@ export default function ClientSettingsView() {
 
 	const hasSecurityHeaderError = invalidSecurityHeaders.length > 0;
 
-	const handleConfigChange = useCallback((field: keyof CoreConfig, value: boolean | number | string[] | GlobalHeaderFilterConfig) => {
+	const handleConfigChange = useCallback(<K extends keyof CoreConfig>(field: K, value: CoreConfig[K]) => {
 		setLocalConfig((prev) => ({ ...prev, [field]: value }));
 	}, []);
 
@@ -293,6 +294,59 @@ export default function ClientSettingsView() {
 			<PageTitle title="Client Settings">Configure client behavior and request handling.</PageTitle>
 
 			<div className="space-y-4">
+				<div className="space-y-3">
+					<div className="flex items-center justify-between gap-4">
+						<div>
+							<label htmlFor="stream-usage-estimation" className="text-sm font-medium">
+								Estimate cancelled stream usage
+							</label>
+							<p className="text-muted-foreground text-sm">
+								Enabled by default. Counts output received before interruption using bundled tiktoken encodings. The generic tokenizer may
+								split text differently from the provider’s tokenizer, so estimated token counts and costs can be higher or lower than actual
+								usage.
+							</p>
+						</div>
+						<Switch
+							id="stream-usage-estimation"
+							data-testid="config-stream-usage-estimation"
+							checked={localConfig.stream_usage_estimation?.enabled ?? true}
+							disabled={!hasSettingsUpdateAccess}
+							onCheckedChange={(enabled) =>
+								handleConfigChange("stream_usage_estimation", { ...localConfig.stream_usage_estimation, enabled })
+							}
+						/>
+					</div>
+					{(localConfig.stream_usage_estimation?.enabled ?? true) && (
+						<div className="space-y-2">
+							<p className="text-muted-foreground text-sm">
+								Specialized tokenizers are bundled, off by default, and not loaded until selected and saved. They can improve estimates for
+								matching models but use additional memory. Estimates may still differ from provider billing. Load failures use the generic
+								fallback.
+							</p>
+							{(["anthropic", "deepseek", "llama2", "llama3"] as const).map((kind) => (
+								<div key={kind} className="flex items-center justify-between">
+									<label htmlFor={`tokenizer-${kind}`} className="text-sm">
+										{kind}
+									</label>
+									<Switch
+										id={`tokenizer-${kind}`}
+										data-testid={`config-tokenizer-${kind}`}
+										disabled={!hasSettingsUpdateAccess}
+										checked={localConfig.stream_usage_estimation?.tokenizers?.includes(kind) ?? false}
+										onCheckedChange={(checked) => {
+											const selected = localConfig.stream_usage_estimation?.tokenizers ?? [];
+											handleConfigChange("stream_usage_estimation", {
+												enabled: true,
+												tokenizers: checked ? [...selected, kind] : selected.filter((value) => value !== kind),
+											});
+										}}
+									/>
+								</div>
+							))}
+						</div>
+					)}
+				</div>
+
 				{/* Drop Excess Requests */}
 				<div className="flex items-center justify-between space-x-2">
 					<div className="space-y-0.5">

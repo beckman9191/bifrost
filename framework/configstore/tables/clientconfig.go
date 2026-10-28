@@ -105,6 +105,7 @@ type TableClientConfig struct {
 	WebhookConfigJSON string `gorm:"column:webhook_config_json;type:text" json:"-"`
 	// MCPCodeModeLimitsJSON holds the per-execution code mode limits as a JSON blob,
 	// deserialized into MCPCodeModeLimits by AfterFind.
+	StreamUsageEstimationJSON    string `gorm:"column:stream_usage_estimation_json;type:text" json:"-"`
 	MCPCodeModeLimitsJSON        string `gorm:"column:mcp_code_mode_limits_json;type:text" json:"-"`
 	MCPOAuthPrivateAllowlistJSON string `gorm:"column:mcp_oauth_private_allowlist_json;type:text" json:"-"` // JSON serialized []string
 	A2APrivateAllowlistJSON      string `gorm:"column:a2a_private_allowlist_json;type:text" json:"-"`       // JSON serialized []string
@@ -129,7 +130,8 @@ type TableClientConfig struct {
 	OAuth2ServerConfig *OAuth2ServerConfig       `gorm:"-" json:"oauth2_server_config,omitempty"`
 	WebhookConfig      *WebhookConfig            `gorm:"-" json:"webhook_config,omitempty"`
 
-	MCPCodeModeLimits *schemas.MCPCodeModeLimits `gorm:"-" json:"mcp_code_mode_limits,omitempty"` // Virtual: per-execution code mode limits
+	StreamUsageEstimation *schemas.StreamUsageEstimationConfig `gorm:"-" json:"stream_usage_estimation,omitempty"`
+	MCPCodeModeLimits     *schemas.MCPCodeModeLimits           `gorm:"-" json:"mcp_code_mode_limits,omitempty"` // Virtual: per-execution code mode limits
 
 	MCPOAuthPrivateAllowlist []string `gorm:"-" json:"mcp_oauth_private_allowlist,omitempty"` // Virtual: private targets the MCP OAuth chain may reach
 	A2APrivateAllowlist      []string `gorm:"-" json:"a2a_private_allowlist,omitempty"`       // Virtual: private targets the Agent Gateway may reach
@@ -269,6 +271,15 @@ func (cc *TableClientConfig) BeforeSave(tx *gorm.DB) error {
 		cc.WebhookConfigJSON = ""
 	}
 
+	if cc.StreamUsageEstimation != nil {
+		data, err := json.Marshal(cc.StreamUsageEstimation)
+		if err != nil {
+			return err
+		}
+		cc.StreamUsageEstimationJSON = string(data)
+	} else {
+		cc.StreamUsageEstimationJSON = ""
+	}
 	if cc.MCPCodeModeLimits != nil {
 		data, err := json.Marshal(cc.MCPCodeModeLimits)
 		if err != nil {
@@ -383,6 +394,15 @@ func (cc *TableClientConfig) AfterFind(tx *gorm.DB) error {
 		cc.WebhookConfig = nil
 	}
 
+	if cc.StreamUsageEstimationJSON != "" {
+		var limits schemas.StreamUsageEstimationConfig
+		if err := json.Unmarshal([]byte(cc.StreamUsageEstimationJSON), &limits); err != nil {
+			return err
+		}
+		cc.StreamUsageEstimation = &limits
+	} else {
+		cc.StreamUsageEstimation = nil
+	}
 	if cc.MCPCodeModeLimitsJSON != "" {
 		var limits schemas.MCPCodeModeLimits
 		if err := json.Unmarshal([]byte(cc.MCPCodeModeLimitsJSON), &limits); err != nil {

@@ -59,6 +59,7 @@ import (
 	"github.com/maximhq/bifrost/core/providers/wafer"
 	"github.com/maximhq/bifrost/core/providers/xai"
 	schemas "github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
 	"github.com/valyala/fasthttp"
 )
 
@@ -124,6 +125,8 @@ func (m *ChannelMessage) abandonDelivery() bool {
 // Bifrost manages providers and maintains specified open channels for concurrent processing.
 // It handles request routing, provider management, and response processing.
 type Bifrost struct {
+	streamUsageConfig          atomic.Pointer[schemas.StreamUsageEstimationConfig]
+	streamUsage                streamusage.Manager
 	ctx                        *schemas.BifrostContext
 	cancel                     context.CancelFunc
 	account                    schemas.Account                       // account interface
@@ -313,6 +316,7 @@ func Init(ctx context.Context, config schemas.BifrostConfig) (*Bifrost, error) {
 		kvStore:       config.KVStore,
 		modelCatalog:  config.ModelCatalog,
 	}
+	bifrost.UpdateStreamUsageEstimation(config.StreamUsageEstimation)
 	bifrost.tracer.Store(&tracerWrapper{tracer: tracer})
 	if config.LLMPlugins == nil {
 		config.LLMPlugins = make([]schemas.LLMPlugin, 0)
@@ -504,6 +508,7 @@ func (bifrost *Bifrost) setModelCatalogOnContext(ctx *schemas.BifrostContext) {
 // Currently we update account, drop excess requests, and plugin lists
 // We will keep on adding other aspects as required
 func (bifrost *Bifrost) ReloadConfig(config schemas.BifrostConfig) error {
+	bifrost.UpdateStreamUsageEstimation(config.StreamUsageEstimation)
 	bifrost.dropExcessRequests.Store(config.DropExcessRequests)
 	return nil
 }
@@ -8487,6 +8492,10 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 					isPreamble = azure.IsStreamPreamble
 				}
 				startup := providerUtils.NewStreamStartupState(isPreamble, providerUtils.AttemptAbortFromContext(req.Context) != nil)
+				var usageStream *streamusage.Stream
+				if estimation := bifrost.streamUsageConfig.Load(); estimation != nil {
+					usageStream = bifrost.streamUsage.Open(req.Context, &req.BifrostRequest, baseProvider, attemptResolvedModel, estimation.Tokenizers...)
+				}
 				postHookRunner := func(ctx *schemas.BifrostContext, result *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError) {
 					// Populate extra fields before RunPostLLMHooks so plugins (e.g. logging)
 					// can read requestType/provider/model from the chunk or error.
@@ -8510,7 +8519,9 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 						heldBackError.Store(true)
 						return nil, err
 					}
+					usageStream.Observe(ctx, result, err)
 					resp, bifrostErr := pipeline.RunPostLLMHooks(ctx, result, err, len(*bifrost.llmPlugins.Load()))
+					usageStream.Capture(ctx, resp)
 					if IsFinalChunk(ctx) {
 						drainAndAttachPluginLogs(ctx)
 						heldBackError.Store(false)
@@ -8535,6 +8546,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				var finalizerOnce sync.Once
 				postHookSpanFinalizer := func(ctx context.Context) {
 					finalizerOnce.Do(func() {
+						usageStream.Close()
 						pipeline.FinalizeStreamingPostHookSpans(ctx)
 						bifrost.releasePluginPipeline(pipeline)
 					})
@@ -8555,6 +8567,7 @@ func (bifrost *Bifrost) requestWorker(provider schemas.Provider, config *schemas
 				// so a retry doesn't inherit a leaked pool entry.
 				if streamErr != nil && streamCh == nil {
 					finalizerOnce.Do(func() {
+						usageStream.Close()
 						bifrost.releasePluginPipeline(pipeline)
 					})
 				}
@@ -11334,4 +11347,20 @@ func (bifrost *Bifrost) Shutdown() {
 		}
 	}
 	bifrost.logger.Info("all request channels closed")
+}
+
+// UpdateStreamUsageEstimation applies an immutable policy to newly opened streams.
+// Embedded vocabularies are loaded here, only for explicitly enabled tokenizer families.
+func (bifrost *Bifrost) UpdateStreamUsageEstimation(config *schemas.StreamUsageEstimationConfig) {
+	if config == nil {
+		config = &schemas.StreamUsageEstimationConfig{Enabled: true}
+	}
+	if !config.Enabled {
+		bifrost.streamUsageConfig.Store(nil)
+		return
+	}
+	copy := *config
+	copy.Tokenizers = append([]string(nil), config.Tokenizers...)
+	streamusage.Warm(copy.Tokenizers...)
+	bifrost.streamUsageConfig.Store(&copy)
 }

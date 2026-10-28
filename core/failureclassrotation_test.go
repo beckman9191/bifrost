@@ -1076,3 +1076,137 @@ func TestStampEndedStreamAttempt(t *testing.T) {
 		}
 	})
 }
+
+type cancelledUsageRecorder struct {
+	endedAttemptRecorder
+	usage chan *schemas.BifrostLLMUsage
+}
+
+func (r *cancelledUsageRecorder) PostLLMHook(_ *schemas.BifrostContext, resp *schemas.BifrostResponse, err *schemas.BifrostError) (*schemas.BifrostResponse, *schemas.BifrostError, error) {
+
+	if err != nil && err.Error != nil && err.Error.Type != nil && *err.Error.Type == schemas.RequestCancelled {
+		r.usage <- err.ExtraFields.BilledUsage.DeepCopy()
+	}
+	return resp, err, nil
+}
+
+func TestCancelledStreamEstimatesUsageWithoutLoggingOrTracer(t *testing.T) {
+	for _, cfg := range []*schemas.StreamUsageEstimationConfig{nil, {Enabled: false}, {Enabled: true}} {
+		enabled := cfg == nil || cfg.Enabled
+		t.Run(fmt.Sprintf("config=%v", cfg), func(t *testing.T) {
+			const provider schemas.ModelProvider = "cancel-estimate"
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(provider, 1, 16, stallingStreamUpstream(t).URL)
+			account.configs[provider].NetworkConfig.MaxRetries = 0
+			account.SetCustomProviderConfig(provider, &schemas.CustomProviderConfig{BaseProviderType: schemas.OpenAI})
+			account.SetKeysForProvider(provider, []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("mock"), Models: schemas.WhiteList{"*"}, Weight: 100}})
+			recorder := &cancelledUsageRecorder{usage: make(chan *schemas.BifrostLLMUsage, 2)}
+			client, err := Init(context.Background(), schemas.BifrostConfig{StreamUsageEstimation: cfg, Account: account, Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{recorder}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(client.Shutdown)
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			stream, streamErr := client.ChatCompletionStreamRequest(ctx, &schemas.BifrostChatRequest{
+				Provider: provider, Model: "m", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: Ptr("hi")}}},
+			})
+			if streamErr != nil {
+				t.Fatal(streamErr.GetErrorString())
+			}
+			for chunk := range stream {
+				if chunk.BifrostError == nil {
+					cancel()
+				}
+			}
+			select {
+			case usage := <-recorder.usage:
+				if !enabled {
+					if usage != nil && usage.Estimation != nil {
+						t.Fatalf("disabled feature estimated usage: %+v", usage)
+					}
+					return
+				}
+				if usage == nil || usage.PromptTokens != 8 || usage.CompletionTokens != 1 || usage.TotalTokens != 9 {
+					t.Fatalf("cancelled stream usage = %+v; want prompt=8 completion=1 total=9 (LiteLLM cl100k fallback)", usage)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("cancellation never reached accounting")
+			}
+		})
+	}
+}
+
+func TestAnthropicCancelledUsageAfterOutput(t *testing.T) {
+	for _, responses := range []bool{false, true} {
+		name := "chat"
+		if responses {
+			name = "responses"
+		}
+		t.Run(name, func(t *testing.T) {
+			output := strings.Repeat("hello world ", 1000)
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+				w.Header().Set("Content-Type", "text/event-stream")
+				fmt.Fprint(w, `event: message_start`+"\n"+`data: {"type":"message_start","message":{"id":"msg_cancel","type":"message","role":"assistant","model":"claude-3-haiku","content":[],"usage":{"input_tokens":26,"output_tokens":4}}}`+"\n\n")
+				fmt.Fprint(w, `event: content_block_start`+"\n"+`data: {"type":"content_block_start","index":0,"content_block":{"type":"text","text":""}}`+"\n\n")
+				fmt.Fprint(w, `event: content_block_delta`+"\n"+`data: {"type":"content_block_delta","index":0,"delta":{"type":"text_delta","text":"`+output+`"}}`+"\n\n")
+				w.(http.Flusher).Flush()
+				select {
+				case <-r.Context().Done():
+				case <-time.After(5 * time.Second):
+				}
+			}))
+			defer srv.Close()
+			account := NewMockAccount()
+			account.AddProviderWithBaseURL(schemas.Anthropic, 1, 16, srv.URL)
+			account.configs[schemas.Anthropic].NetworkConfig.MaxRetries = 0
+			account.SetKeysForProvider(schemas.Anthropic, []schemas.Key{{ID: "k1", Value: *schemas.NewSecretVar("mock"), Models: schemas.WhiteList{"*"}, Weight: 100}})
+			ctx, cancel := schemas.NewBifrostContextWithCancel(context.Background())
+			defer cancel()
+			recorder := &cancelledUsageRecorder{usage: make(chan *schemas.BifrostLLMUsage, 2)}
+			client, err := Init(context.Background(), schemas.BifrostConfig{StreamUsageEstimation: &schemas.StreamUsageEstimationConfig{Enabled: true}, Account: account, Logger: NewNoOpLogger(), LLMPlugins: []schemas.LLMPlugin{recorder}})
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer client.Shutdown()
+			request := &schemas.BifrostChatRequest{Provider: schemas.Anthropic, Model: "claude-3-haiku", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: Ptr("hi")}}}}
+			var stream chan *schemas.BifrostStreamChunk
+			var streamErr *schemas.BifrostError
+			if responses {
+				stream, streamErr = client.ResponsesStreamRequest(ctx, request.ToResponsesRequest())
+			} else {
+				stream, streamErr = client.ChatCompletionStreamRequest(ctx, request)
+			}
+			if streamErr != nil {
+				t.Fatal(streamErr.GetErrorString())
+			}
+			seen := 0
+			for chunk := range stream {
+				if chunk.BifrostChatResponse != nil {
+					for _, c := range chunk.BifrostChatResponse.Choices {
+						if c.ChatStreamResponseChoice != nil && c.Delta != nil && c.Delta.Content != nil {
+							seen += len(*c.Delta.Content)
+						}
+					}
+				}
+				if c := chunk.BifrostResponsesStreamResponse; c != nil && c.Type == schemas.ResponsesStreamResponseTypeOutputTextDelta && c.Delta != nil {
+					seen += len(*c.Delta)
+				}
+				if seen >= 12000 {
+					cancel()
+				}
+			}
+			select {
+			case usage := <-recorder.usage:
+				if usage == nil || usage.CompletionTokens <= 4 || usage.PromptTokens != 26 || usage.Estimation == nil || !usage.Estimation.Completion {
+					t.Fatalf("stale cancelled usage: %+v", usage)
+				}
+				if usage.TotalTokens != usage.PromptTokens+usage.CompletionTokens {
+					t.Fatalf("inconsistent total: %+v", usage)
+				}
+			case <-time.After(3 * time.Second):
+				t.Fatal("no cancellation usage")
+			}
+		})
+	}
+}

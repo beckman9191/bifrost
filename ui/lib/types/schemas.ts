@@ -1405,6 +1405,9 @@ export const cacheConfigSchema = z.union([directCacheConfigSchema, providerBacke
 
 // Core config schema
 export const coreConfigSchema = z.object({
+	stream_usage_estimation: z
+		.object({ enabled: z.boolean().default(true), tokenizers: z.array(z.enum(["anthropic", "deepseek", "llama2", "llama3"])).optional() })
+		.optional(),
 	drop_excess_requests: z.boolean().default(false),
 	initial_pool_size: z.number().min(1).default(10),
 	prometheus_labels: z.array(z.string()).default([]),

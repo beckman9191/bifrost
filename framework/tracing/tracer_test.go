@@ -10,6 +10,7 @@ import (
 	"github.com/bytedance/sonic"
 	bifrost "github.com/maximhq/bifrost/core"
 	"github.com/maximhq/bifrost/core/schemas"
+	"github.com/maximhq/bifrost/core/streamusage"
 	configstoreTables "github.com/maximhq/bifrost/framework/configstore/tables"
 	"github.com/maximhq/bifrost/framework/grant"
 	"github.com/maximhq/bifrost/framework/modelcatalog"
@@ -1558,4 +1559,32 @@ func TestTracer_StampsTimeToFirstTokenFromRequestReceipt(t *testing.T) {
 	if after, _ := root.GetAttribute(schemas.AttrBifrostTimeToFirstTokenMs); after != before {
 		t.Errorf("%s moved from %v to %v on a later chunk", schemas.AttrBifrostTimeToFirstTokenMs, before, after)
 	}
+}
+
+func TestCancelledUsageReusesAccumulatorWithoutLogging(t *testing.T) {
+	store := NewTraceStore(time.Minute, bifrost.NewNoOpLogger())
+	defer store.Stop()
+	tracer := NewTracer(store, nil, bifrost.NewNoOpLogger())
+	defer tracer.Stop()
+	id := tracer.CreateTrace("")
+	ctx := schemas.NewBifrostContext(context.Background(), schemas.NoDeadline)
+	ctx.SetValue(schemas.BifrostContextKeyTraceID, id)
+	ctx.SetValue(schemas.BifrostContextKeyTracer, tracer)
+	request := &schemas.BifrostRequest{RequestType: schemas.ChatCompletionStreamRequest, ChatRequest: &schemas.BifrostChatRequest{Model: "unknown", Input: []schemas.ChatMessage{{Role: schemas.ChatMessageRoleUser, Content: &schemas.ChatMessageContent{ContentStr: schemas.Ptr("hi")}}}}}
+	stream := (&streamusage.Manager{}).Open(ctx, request, schemas.OpenAI, "unknown")
+	defer stream.Close()
+	for i, text := range []string{"hello ", "world"} {
+		chunk := &schemas.BifrostResponse{ChatResponse: &schemas.BifrostChatResponse{Choices: []schemas.BifrostResponseChoice{{ChatStreamResponseChoice: &schemas.ChatStreamResponseChoice{Delta: &schemas.ChatStreamResponseChoiceDelta{Content: &text}}}}, ExtraFields: schemas.BifrostResponseExtraFields{ChunkIndex: i, RequestType: schemas.ChatCompletionStreamRequest}}}
+		stream.Observe(ctx, chunk, nil)
+		// Simulate a plugin that already accumulated the chunk before core.
+		tracer.ProcessStreamingChunk(ctx, id, false, chunk, nil)
+		stream.Capture(ctx, chunk)
+	}
+	err := &schemas.BifrostError{Error: &schemas.ErrorField{Type: schemas.Ptr(schemas.RequestCancelled)}}
+	stream.Observe(ctx, nil, err)
+	require.NotNil(t, err.ExtraFields.BilledUsage)
+	require.Equal(t, 2, err.ExtraFields.BilledUsage.CompletionTokens)
+	require.Equal(t, 8, err.ExtraFields.BilledUsage.PromptTokens)
+	stream.Close()
+	require.Nil(t, tracer.GetAccumulatedResponse(id), "core's accumulator reference leaked")
 }

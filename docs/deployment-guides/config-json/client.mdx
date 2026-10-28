@@ -28,6 +28,31 @@ A larger pool reduces latency spikes under burst load at the cost of higher base
 
 ---
 
+## Cancelled stream usage estimation
+
+**Estimate cancelled stream usage** is enabled by default in **Client Settings** for interrupted chat completions, text completions, and Responses streams. Specialized tokenizers are disabled and uninitialized by default. It counts only output already received when cancellation or timeout is reported; it does not wait for the full response or drain upstream output. Estimates are attached to billed usage before logging, governance, and telemetry hooks run. A disconnected client cannot receive a final usage event.
+
+```json
+{
+  "client": {
+    "stream_usage_estimation": {
+      "enabled": true,
+      "tokenizers": []
+    }
+  }
+}
+```
+
+The empty tokenizer list uses bundled tiktoken encodings. Generic tokenization may split text differently from the provider’s tokenizer, so estimated counts and costs can be higher or lower than actual usage. Unknown models, including Cohere, use `cl100k_base`; recognized newer OpenAI models use `o200k_base`. Optional tokenizer selections are `anthropic`, `deepseek`, `llama2`, and `llama3`. Their vocabularies are embedded in the Bifrost binary, so no network access is needed; only selections made while estimation is enabled are loaded, when settings are applied. These are pinned vocabulary snapshots following LiteLLM's model selection rules, not guarantees of exact provider billing for every model version. Initialization failures fall back to the generic tokenizer.
+
+Loading all four specialized tokenizers retains roughly 120 MB of process memory. Disabling a tokenizer stops its selection for new streams; a loaded vocabulary stays in memory until the process restarts. A failed initialization uses the generic fallback until restart.
+
+Authoritative provider usage is preserved. Anthropic's initial provisional output count is replaced when cancellation occurs before a later usage update. Estimated fields carry `usage.estimation` provenance. Text, tool arguments, and received reasoning text can be estimated; unreceived output and hidden reasoning cannot. Missing prompt usage for image/audio inputs is left unknown rather than assigned a text-only estimate.
+
+Enabled streams reuse the tracing accumulator where available. Otherwise, a manager retains received text until stream cleanup. Tokenization runs only on interruption, never on each successful chunk. The disabled feature retains no additional per-stream content. Vocabulary caches are bounded to the two bundled encodings and four explicitly selectable families; request state is released at stream finalization.
+
+---
+
 ## Request & Response Logging
 
 | Field | Type | Default | Description |

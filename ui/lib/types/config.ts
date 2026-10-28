@@ -875,6 +875,7 @@ export interface MCPCodeModeLimits {
 // How far an upstream MCP server's initialize `instructions` travel: dropped, forwarded on
 // the /mcp gateway handshake, or additionally injected into LLM requests.
 export interface CoreConfig {
+	stream_usage_estimation?: { enabled: boolean; tokenizers?: string[] };
 	drop_excess_requests: boolean;
 	initial_pool_size: number;
 	prometheus_labels: string[];

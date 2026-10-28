@@ -138,6 +138,31 @@
           },
           "description": "CORS allowed origins: exact URI strings, wildcard-host patterns such as https://*.example.com, or \"*\". While dashboard auth is disabled, browser requests to the management API are accepted only from localhost origins, the gateway's own origin, and origins listed here explicitly; the \"*\" entry does not admit them."
         },
+        "stream_usage_estimation": {
+          "type": "object",
+          "description": "Estimate usage from received output when a stream is cancelled. Enabled by default using bundled generic tokenizers. Specialized tokenizers are bundled but remain unloaded until selected while estimation is enabled.",
+          "additionalProperties": false,
+          "properties": {
+            "enabled": {
+              "type": "boolean",
+              "default": true
+            },
+            "tokenizers": {
+              "type": "array",
+              "uniqueItems": true,
+              "default": [],
+              "items": {
+                "type": "string",
+                "enum": [
+                  "anthropic",
+                  "deepseek",
+                  "llama2",
+                  "llama3"
+                ]
+              }
+            }
+          }
+        },
         "enable_logging": {
           "type": "boolean",
           "description": "Enable request/response logging"

@@ -23,27 +23,47 @@ type KeySelector func(ctx *BifrostContext, keys []Key, providerKey ModelProvider
 // from the available pool.
 type KeyPoolFilter func(ctx *BifrostContext, provider ModelProvider, model string, keys []Key) ([]Key, error)
 
+// StreamUsageEstimationConfig controls cancellation-only usage estimation.
+// Estimation defaults to enabled when configuration is omitted.
+// An empty tokenizer list uses the bundled generic tokenizer only.
+type StreamUsageEstimationConfig struct {
+	Enabled    bool     `json:"enabled"`
+	Tokenizers []string `json:"tokenizers,omitempty"`
+}
+
+// UnmarshalJSON preserves the default when only tokenizer selections are supplied.
+func (c *StreamUsageEstimationConfig) UnmarshalJSON(data []byte) error {
+	type configAlias StreamUsageEstimationConfig
+	value := configAlias{Enabled: true}
+	if err := json.Unmarshal(data, &value); err != nil {
+		return err
+	}
+	*c = StreamUsageEstimationConfig(value)
+	return nil
+}
+
 // BifrostConfig represents the configuration for initializing a Bifrost instance.
 // It contains the necessary components for setting up the system including account details,
 // plugins, logging, and initial pool size.
 type BifrostConfig struct {
-	Account            Account
-	LLMPlugins         []LLMPlugin
-	MCPPlugins         []MCPPlugin
-	A2APlugins         []A2APlugin
-	RelayPlugins       []RelayPlugin
-	OAuth2Provider     OAuth2Provider
-	MCPHeadersProvider MCPHeadersProvider // Backend for MCPAuthTypePerUserHeaders credential storage; nil disables per-user-headers auth (resolver errors at use)
-	Logger             Logger
-	Tracer             Tracer          // Tracer for distributed tracing (nil = NoOpTracer)
-	InitialPoolSize    int             // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
-	DropExcessRequests bool            // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
-	MCPConfig          *MCPConfig      // MCP (Model Context Protocol) configuration for tool integration
-	KeySelector        KeySelector     // Custom key selector function
-	KeyPoolFilter      KeyPoolFilter   // Optional hook to filter available keys before selection; nil = all keys eligible
-	KVStore            KVStore         // shared KV store for clustering/session stickiness; nil = disabled
-	SessionAffinity    SessionAffinity // Decides which key a session stays on; nil = Bifrost's own default, which needs KVStore to bind anything
-	ModelCatalog       ModelInfoProvider
+	StreamUsageEstimation *StreamUsageEstimationConfig
+	Account               Account
+	LLMPlugins            []LLMPlugin
+	MCPPlugins            []MCPPlugin
+	A2APlugins            []A2APlugin
+	RelayPlugins          []RelayPlugin
+	OAuth2Provider        OAuth2Provider
+	MCPHeadersProvider    MCPHeadersProvider // Backend for MCPAuthTypePerUserHeaders credential storage; nil disables per-user-headers auth (resolver errors at use)
+	Logger                Logger
+	Tracer                Tracer          // Tracer for distributed tracing (nil = NoOpTracer)
+	InitialPoolSize       int             // Initial pool size for sync pools in Bifrost. Higher values will reduce memory allocations but will increase memory usage.
+	DropExcessRequests    bool            // If true, in cases where the queue is full, requests will not wait for the queue to be empty and will be dropped instead.
+	MCPConfig             *MCPConfig      // MCP (Model Context Protocol) configuration for tool integration
+	KeySelector           KeySelector     // Custom key selector function
+	KeyPoolFilter         KeyPoolFilter   // Optional hook to filter available keys before selection; nil = all keys eligible
+	KVStore               KVStore         // shared KV store for clustering/session stickiness; nil = disabled
+	SessionAffinity       SessionAffinity // Decides which key a session stays on; nil = Bifrost's own default, which needs KVStore to bind anything
+	ModelCatalog          ModelInfoProvider
 }
 
 // ModelProvider represents the different AI model providers supported by Bifrost.
@@ -446,6 +466,7 @@ const (
 	BifrostContextKeyLargePayloadPrefetchSize            BifrostContextKey = "bifrost-large-payload-prefetch-size"        // int (set by enterprise - DO NOT SET THIS MANUALLY)) prefetch buffer size for metadata extraction from large responses
 	BifrostContextKeyDeferredUsage                       BifrostContextKey = "bifrost-deferred-usage"                     // chan *BifrostLLMUsage (set by provider Phase B — delivers usage after response streaming completes)
 	BifrostContextKeyDeferredGuardrail                   BifrostContextKey = "bifrost-deferred-guardrail"                 // *DeferredGuardrailResult (set by enterprise guardrails plugin — output guardrail results that finish after the response was delivered; the log writer holds the row until they land)
+	BifrostContextKeyStreamUsageUpdates                  BifrostContextKey = "bifrost-stream-usage-updates"               // Number of provider usage events in this attempt.
 	BifrostContextKeyStreamAccumulatedUsage              BifrostContextKey = "bifrost-stream-accumulated-usage"           // *BifrostLLMUsage handle, set ONCE by a streaming provider and mutated in place as usage arrives; read on cancel/timeout to bill partial usage that the provider already consumed
 	BifrostContextKeyDeferredLargePayloadMetadata        BifrostContextKey = "bifrost-deferred-large-payload-metadata"    // <-chan *LargePayloadMetadata (set by enterprise Phase B request — delivers metadata after body streaming)
 	BifrostContextKeySSEReaderFactory                    BifrostContextKey = "bifrost-sse-reader-factory"                 // *providerUtils.SSEReaderFactory (set by enterprise — replaces default bufio.Scanner SSE readers with streaming readers)
